@@ -1,0 +1,80 @@
+/* Own Netflix-style player */
+#player{background:#000}
+#v{position:absolute;inset:0;width:100%;height:100%;background:#000}
+#vSpin{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.spin.big{width:64px;height:64px;border-width:5px}
+.vflash{position:absolute;top:42%;font-size:26px;font-weight:900;background:rgba(0,0,0,.55);
+  padding:14px 22px;border-radius:14px;opacity:0;transition:opacity .25s;pointer-events:none}
+#vFlashL{left:8%} #vFlashR{right:8%}
+.vflash.show{opacity:1}
+#vBig{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:110px;color:rgba(255,255,255,.9);pointer-events:none;text-shadow:0 4px 30px #000}
+#vTop{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:14px;
+  padding:16px 24px;background:linear-gradient(180deg,rgba(0,0,0,.75),transparent);z-index:5;
+  transition:opacity .3s}
+#vTop button{background:rgba(20,26,44,.85);color:#fff;border:1px solid var(--line);
+  border-radius:10px;padding:10px 18px;font-size:17px;cursor:pointer}
+#vBottom{position:absolute;bottom:0;left:0;right:0;padding:6px 44px 20px;
+  background:linear-gradient(0deg,rgba(0,0,0,.78) 20%,transparent);z-index:5;transition:opacity .3s}
+#player.bars-hidden #vTop,#player.bars-hidden #vBottom{opacity:0;pointer-events:none}
+#player.bars-hidden{cursor:none}
+#vProgWrap{display:flex;align-items:center;gap:16px}
+#vProg{position:relative;flex:1;height:30px;cursor:pointer;border-radius:8px}
+#vProg::before{content:'';position:absolute;left:0;right:0;top:13px;height:4px;border-radius:3px;background:rgba(255,255,255,.3)}
+#vBuf{position:absolute;left:0;top:13px;height:4px;border-radius:3px;background:rgba(255,255,255,.5);width:0}
+#vPlayed{position:absolute;left:0;top:13px;height:4px;border-radius:3px;background:var(--acc);width:0}
+#vKnob{position:absolute;top:9px;width:12px;height:12px;border-radius:50%;background:#fff;
+  transform:translateX(-50%);left:0;box-shadow:0 1px 6px rgba(0,0,0,.7)}
+#vTip{position:absolute;bottom:28px;transform:translateX(-50%);background:rgba(0,0,0,.85);
+  border:1px solid rgba(255,255,255,.2);padding:3px 9px;border-radius:6px;font-size:13px;
+  font-variant-numeric:tabular-nums;white-space:nowrap;display:none;left:0}
+#vProg:hover #vTip,#vProg.focused #vTip{display:block}
+#vProg.focused{outline:none}
+#vProg.focused::before{box-shadow:0 0 0 2px var(--acc)}
+#vTime{font-size:15px;color:#e8ecf5;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* floating minimal control row like the reference */
+#vBtns{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:2px;flex-wrap:wrap}
+#vBtns button{background:transparent;color:#fff;border:2px solid transparent;border-radius:10px;
+  padding:8px 12px;font-size:16px;font-weight:700;cursor:pointer;min-width:44px}
+#vBtns button.focused{border-color:var(--acc);background:rgba(244,117,33,.18);transform:scale(1.06)}
+#vBtns button.on{border-color:var(--acc2);color:#cfc4ff}
+/* the one big round play/pause button */
+#vBtns #bPlay{width:66px;height:66px;min-width:66px;border-radius:50%;font-size:24px;
+  background:rgba(0,0,0,.35);border:3px solid #fff;margin:0 10px;padding:0;
+  display:inline-flex;align-items:center;justify-content:center}
+#vBtns #bPlay.focused{border-color:var(--acc);background:rgba(244,117,33,.25);transform:scale(1.06)}
+#vBtns .txtbtn{border:1px solid rgba(255,255,255,.35);font-size:13px;letter-spacing:1px;
+  padding:7px 12px;text-transform:uppercase}
+.vsep{width:2px;height:26px;background:rgba(255,255,255,.2);margin:0 6px}
+#vMenu{position:absolute;right:30px;bottom:150px;min-width:300px;max-width:420px;max-height:46vh;overflow:auto;
+  background:#141a2e;border:1px solid var(--line);border-radius:14px;z-index:8;padding:10px;
+  box-shadow:0 18px 50px rgba(0,0,0,.6)}
+#vMenuTitle{font-size:15px;font-weight:800;color:var(--mut);padding:6px 12px 10px;letter-spacing:1px}
+#vMenuList button{display:flex;width:100%;text-align:left;background:transparent;color:#fff;border:2px solid transparent;
+  border-radius:10px;padding:12px;font-size:18px;cursor:pointer}
+#vMenuList button.focused{border-color:var(--acc);background:#2a1a10}
+#vMenuList button .tick{margin-left:auto;color:var(--ok);font-weight:900}
+/* screen lock: everything disappears except the lock */
+#player.locked #vTop,#player.locked #vBottom,#player.locked #vMenu{display:none!important}
+#vLockFab{position:absolute;right:30px;bottom:30px;width:68px;height:68px;border-radius:50%;z-index:9;
+  display:flex;align-items:center;justify-content:center;font-size:30px;cursor:pointer;
+  background:rgba(10,14,24,.8);border:2px solid var(--acc)}
+#vLockFab.focused{box-shadow:0 0 0 3px var(--acc)}
+#vEnd{position:absolute;inset:0;display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.72);z-index:7;text-align:center;padding:20px}
+#vEnd h2{margin:0;font-size:34px}
+#vEnd p{color:var(--mut);font-size:18px;max-width:640px}
+#vEnd .row{display:flex;gap:12px}
+#vEnd button{font-size:20px;font-weight:800;padding:14px 30px;border-radius:12px;cursor:pointer;
+  background:var(--card);color:#fff;border:2px solid var(--line)}
+#vEnd button.primary{background:var(--acc);border-color:var(--acc);color:#1a0d05}
+#vEnd button.focused{border-color:#fff}
+#vFrameWrap{position:absolute;inset:0;background:#000;z-index:6;display:flex;flex-direction:column}
+#vFrameWrap .vfw-head{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;
+  background:#0d1222;color:var(--mut);font-size:15px}
+#vFrameWrap .vfw-head button{background:var(--card);color:#fff;border:1px solid var(--line);
+  border-radius:10px;padding:8px 16px;font-size:15px;cursor:pointer}
+#vFrameWrap #frame{flex:1;width:100%;min-height:0}
+#vFrameWrap #serverRow{padding:10px 20px;background:#0d1222}
+/* subtitle styling */
+#v::cue{font-size:1.15em;background:rgba(0,0,0,.65);color:#fff;text-shadow:0 1px 3px #000}

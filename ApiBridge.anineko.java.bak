@@ -1,0 +1,629 @@
+package com.moemen.tv;
+
+import android.webkit.JavascriptInterface;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TimeZone;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Live bridge: fetches anineko.to HTML natively (no CORS in native code),
+ * parses it with Jsoup (same selectors as server.js) and returns JSON
+ * to the WebView UI via window.AniNeko.api(path).
+ */
+public class ApiBridge {
+    private static final String BASE = "https://anineko.to";
+    private static final String UA = "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36 MoemenTV/1.0";
+    private static final long TTL = 5 * 60 * 1000;
+
+    private static class Entry { long t; String v; }
+
+    private final Map<String, Entry> cache = new HashMap<>();
+
+    // Mirrored UI state for remote BACK handling in MainActivity
+    public volatile boolean playerOpen = false;
+    public volatile boolean searchOpen = false;
+    public volatile String view = "home";
+
+    private android.app.Activity activity;
+    private boolean tvMode = true;
+    private int playerReq = 1001;
+    public ApiBridge() { }
+    public ApiBridge(android.app.Activity a) { this(a, true); }
+    public ApiBridge(android.app.Activity a, boolean tv) { activity = a; tvMode = tv; playerReq = tv ? 1001 : 1002; }
+
+    /** Phone shell shows downloads; TV shell hides them. */
+    @JavascriptInterface
+    public boolean isTV() { return tvMode; }
+
+    /** Started from the download chooser (mobile). Runs fully in background. */
+    @JavascriptInterface
+    public void downloadEpisode(String json) {
+        try {
+            if (activity != null) Downloader.enqueue(activity.getApplicationContext(), json);
+        } catch (Exception ignored) { }
+    }
+
+    /** Launch the native ExoPlayer with a full session payload from the WebView UI. */
+    @JavascriptInterface
+    public void playNative(String json) {
+        try {
+            if (activity == null) return;
+            JSONObject o = new JSONObject(json);
+            android.content.Intent i = new android.content.Intent(activity, PlayerActivity.class);
+            i.putExtra(PlayerActivity.EX_SLUG, o.optString("slug", ""));
+            i.putExtra(PlayerActivity.EX_EP, o.optInt("ep", 1));
+            i.putExtra(PlayerActivity.EX_TITLE, o.optString("title", ""));
+            i.putExtra(PlayerActivity.EX_POSTER, o.optString("poster", ""));
+            i.putExtra(PlayerActivity.EX_LANG, o.optString("lang", "sub"));
+            i.putExtra(PlayerActivity.EX_SERVERS, o.optJSONObject("servers") != null
+                    ? o.optJSONObject("servers").toString() : "{}");
+            i.putExtra(PlayerActivity.EX_EPISODES, o.optJSONArray("episodes") != null
+                    ? o.optJSONArray("episodes").toString() : "[]");
+            i.putExtra(PlayerActivity.EX_POS, (long) (o.optDouble("pos", 0) * 1000));
+            activity.startActivityForResult(i, playerReq);
+        } catch (Exception ignored) { }
+    }
+
+    /** Reusable by PlayerActivity for prev/next episode server lists. */
+    public JSONObject getWatch(String slug, int ep) throws Exception {
+        return cached("watch:" + slug + ":" + ep, false, new Loader() {
+            public JSONObject load() throws Exception { return scrapeWatch(slug, ep); }
+        });
+    }
+
+    @JavascriptInterface
+    public void setState(String json) {
+        try {
+            JSONObject o = new JSONObject(json);
+            playerOpen = o.optBoolean("playerOpen", false);
+            searchOpen = o.optBoolean("searchOpen", false);
+            view = o.optString("view", "home");
+        } catch (Exception ignored) { }
+    }
+
+    @JavascriptInterface
+    public String api(String path) {
+        try {
+            return dispatch(path).toString();
+        } catch (Exception e) {
+            try {
+                return new JSONObject().put("error", String.valueOf(e.getMessage())).toString();
+            } catch (Exception x) {
+                return "{\"error\":\"unknown\"}";
+            }
+        }
+    }
+
+    // ---------------- dispatch ----------------
+    private JSONObject dispatch(String path) throws Exception {
+        String p = path;
+        boolean refresh = p.contains("refresh=1");
+        if (p.startsWith("/api/home")) return cached("home", refresh, new Loader() {
+            public JSONObject load() throws Exception { return scrapeHome(); }
+        });
+        if (p.startsWith("/api/schedule")) return cached("schedule", true, new Loader() {
+            public JSONObject load() throws Exception { return scrapeSchedule(); }
+        });
+        if (p.startsWith("/api/search")) {
+            String q = queryParam(p, "q");
+            if (q.isEmpty()) q = queryParam(p, "keyword");
+            final String fq = q;
+            return cached("search:" + fq, refresh, new Loader() {
+                public JSONObject load() throws Exception { return scrapeBrowse("keyword=" + URLEncoder.encode(fq, "UTF-8")); }
+            });
+        }
+        if (p.startsWith("/api/browse")) {
+            String qs = "";
+            int qi = p.indexOf('?');
+            if (qi >= 0) qs = p.substring(qi + 1).replace("refresh=1&", "").replace("&refresh=1", "").replace("refresh=1", "");
+            final String fqs = qs;
+            return cached("browse:" + fqs, refresh, new Loader() {
+                public JSONObject load() throws Exception { return scrapeBrowse(fqs); }
+            });
+        }
+        Matcher m = Pattern.compile("/api/anime/([a-z0-9\\-]+)").matcher(p);
+        if (m.find()) {
+            final String slug = m.group(1);
+            return cached("anime:" + slug, refresh, new Loader() {
+                public JSONObject load() throws Exception { return scrapeAnime(slug); }
+            });
+        }
+        Matcher w = Pattern.compile("/api/watch/([a-z0-9\\-]+)/(.+)").matcher(p);
+        if (w.find()) {
+            final String slug = w.group(1);
+            final int ep = Integer.parseInt(w.group(2).replaceAll("\\D", ""));
+            return cached("watch:" + slug + ":" + ep, refresh, new Loader() {
+                public JSONObject load() throws Exception { return scrapeWatch(slug, ep); }
+            });
+        }
+        throw new Exception("unknown api path: " + path);
+    }
+
+    private interface Loader { JSONObject load() throws Exception; }
+
+    private synchronized JSONObject cached(String key, boolean force, Loader l) throws Exception {
+        if (!force) {
+            Entry e = cache.get(key);
+            if (e != null && System.currentTimeMillis() - e.t < TTL) return new JSONObject(e.v);
+        }
+        JSONObject v = l.load();
+        Entry e = new Entry();
+        e.t = System.currentTimeMillis();
+        e.v = v.toString();
+        cache.put(key, e);
+        return v;
+    }
+
+    // ---------------- http ----------------
+    private String fetchPage(String url) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setRequestProperty("User-Agent", UA);
+        c.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
+        c.setRequestProperty("Referer", BASE + "/");
+        c.setRequestProperty("Accept-Encoding", "gzip");
+        c.setConnectTimeout(20000);
+        c.setReadTimeout(20000);
+        c.setInstanceFollowRedirects(true);
+        int code = c.getResponseCode();
+        if (code < 200 || code >= 300) throw new Exception("upstream " + code);
+        InputStream in = c.getInputStream();
+        String enc = c.getContentEncoding();
+        if (enc != null && enc.contains("gzip")) in = new java.util.zip.GZIPInputStream(in);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        in.close();
+        return out.toString("UTF-8");
+    }
+
+    private static String now() {
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
+        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return f.format(new java.util.Date());
+    }
+
+    private static String queryParam(String path, String name) {
+        try {
+            int qi = path.indexOf('?');
+            if (qi < 0) return "";
+            for (String kv : path.substring(qi + 1).split("&")) {
+                int eq = kv.indexOf('=');
+                if (eq > 0 && java.net.URLDecoder.decode(kv.substring(0, eq), "UTF-8").equals(name)) {
+                    return java.net.URLDecoder.decode(kv.substring(eq + 1), "UTF-8");
+                }
+            }
+        } catch (Exception ignored) { }
+        return "";
+    }
+
+    // ---------------- helpers (mirror server.js) ----------------
+    private static String abs(String u) {
+        if (u == null || u.isEmpty()) return "";
+        if (u.startsWith("http")) return u;
+        if (u.startsWith("//")) return "https:" + u;
+        return BASE + (u.startsWith("/") ? u : "/" + u);
+    }
+
+    private static String slugFromHref(String href) {
+        if (href == null) return "";
+        Matcher m = Pattern.compile("/watch/([a-z0-9\\-]+)(?:/ep\\-(\\d+))?", Pattern.CASE_INSENSITIVE).matcher(href);
+        return m.find() ? m.group(1) : "";
+    }
+
+    private static int epFromHref(String href) {
+        if (href == null) return -1;
+        Matcher m = Pattern.compile("/ep\\-(\\d+)", Pattern.CASE_INSENSITIVE).matcher(href);
+        return m.find() ? Integer.parseInt(m.group(1)) : -1;
+    }
+
+    private static int numIn(String s) {
+        if (s == null) return 0;
+        Matcher m = Pattern.compile("(\\d+)").matcher(s);
+        return m.find() ? Integer.parseInt(m.group(1)) : 0;
+    }
+
+    private static String txt(Element root, String css) {
+        Element e = root.selectFirst(css);
+        return e == null ? "" : e.text().trim();
+    }
+
+    private JSONObject parseCard(Element el) throws Exception {
+        Elements links = el.select("a.nv-anime-thumb, a[href*=/watch/]");
+        String href = links.isEmpty() ? "" : links.first().attr("href");
+        if (href.isEmpty()) {
+            Element a = el.selectFirst("a");
+            if (a != null) href = a.attr("href");
+        }
+        String slug = slugFromHref(href);
+        if (slug.isEmpty()) return null;
+        Element img = el.selectFirst("img");
+        Element titleEl = el.selectFirst(".nv-anime-title a, h3 a, h3");
+        String title = titleEl != null ? titleEl.text().trim()
+                : (img != null ? img.attr("alt").trim() : slug);
+        List<String> genres = new ArrayList<>();
+        for (Element g : el.select(".nv-anime-genres span")) {
+            String t = g.text().trim();
+            if (!t.isEmpty()) genres.add(t);
+        }
+        JSONObject o = new JSONObject();
+        o.put("slug", slug);
+        o.put("title", title);
+        o.put("poster", abs(img == null ? "" : img.attr("src").isEmpty() ? img.attr("data-src") : img.attr("src")));
+        o.put("href", "/watch/" + slug);
+        o.put("genres", new JSONArray(genres));
+        o.put("type", txt(el, ".nv-badge-new"));
+        o.put("subCount", numIn(txt(el, ".nv-stat-cc")));
+        o.put("dubCount", numIn(txt(el, ".nv-stat-dub")));
+        return o;
+    }
+
+    private Element sectionForHeading(Document doc, String needle) {
+        for (Element h : doc.select("h2")) {
+            if (h.text().toLowerCase(Locale.US).contains(needle)) {
+                Element sec = h.closest("section");
+                if (sec != null) return sec;
+                Element p = h.parent();
+                if (p != null && p.parent() != null) return p.parent();
+                return h;
+            }
+        }
+        return null;
+    }
+
+    // ---------------- scrapers ----------------
+    private JSONObject scrapeHome() throws Exception {
+        Document doc = Jsoup.parse(fetchPage(BASE + "/home"), BASE);
+
+        JSONArray spotlight = new JSONArray();
+        for (Element el : doc.select(".nv-hero-slide")) {
+            String link = el.selectFirst("a.nv-btn-primary") != null
+                    ? el.selectFirst("a.nv-btn-primary").attr("href") : "";
+            String slug = slugFromHref(link);
+            if (slug.isEmpty()) continue;
+            Element bg = el.selectFirst("img.nv-hero-bg");
+            List<String> tags = new ArrayList<>();
+            for (Element s : el.select(".nv-hero-tags span")) tags.add(s.text().trim());
+            List<String> genres = new ArrayList<>();
+            for (Element a : el.select(".nv-hero-meta a[href*=genres]")) {
+                String t = a.text().replaceAll("^,\\s*", "").trim();
+                if (!t.isEmpty() && !genres.contains(t)) genres.add(t);
+            }
+            JSONObject o = new JSONObject();
+            o.put("slug", slug);
+            o.put("title", txt(el, ".nv-hero-title"));
+            o.put("desc", txt(el, ".nv-hero-desc"));
+            String img = abs(bg == null ? "" : bg.attr("src"));
+            o.put("backdrop", img);
+            o.put("poster", img);
+            o.put("tags", new JSONArray(tags));
+            o.put("genres", new JSONArray(genres));
+            spotlight.put(o);
+        }
+
+        JSONArray featured = new JSONArray();
+        for (Element el : doc.select("#nvFeaturedGrid .nv-anime-card")) {
+            JSONObject c = parseCard(el);
+            if (c != null) featured.put(c);
+        }
+
+        JSONArray trending = new JSONArray();
+        Element tsec = sectionForHeading(doc, "trending");
+        if (tsec != null) {
+            for (Element el : tsec.select(".nv-anime-card")) {
+                JSONObject c = parseCard(el);
+                if (c != null) trending.put(c);
+            }
+        }
+        if (trending.length() == 0 && tsec != null) {
+            Map<String, JSONObject> seen = new LinkedHashMap<>();
+            for (Element a : tsec.select("a[href*=/watch/]")) {
+                String href = a.attr("href");
+                if (!href.matches("(?i).*/watch/[a-z0-9\\-]+/?")) continue;
+                String slug = slugFromHref(href);
+                if (slug.isEmpty() || seen.containsKey(slug)) continue;
+                Element img = a.selectFirst("img");
+                Element strong = a.selectFirst("strong, b");
+                JSONObject o = new JSONObject();
+                o.put("slug", slug);
+                o.put("title", strong != null ? strong.text().trim()
+                        : (img != null ? img.attr("alt") : slug));
+                o.put("poster", abs(img == null ? "" : img.attr("src")));
+                o.put("href", "/watch/" + slug);
+                o.put("genres", new JSONArray());
+                o.put("type", "");
+                o.put("subCount", 0);
+                o.put("dubCount", 0);
+                seen.put(slug, o);
+                if (seen.size() >= 10) break;
+            }
+            for (JSONObject o : seen.values()) trending.put(o);
+        }
+
+        JSONArray latest = new JSONArray();
+        Element lsec = sectionForHeading(doc, "latest");
+        if (lsec != null) {
+            for (Element el : lsec.select(".nv-anime-card")) {
+                JSONObject c = parseCard(el);
+                if (c != null && latest.length() < 15) latest.put(c);
+            }
+            if (latest.length() == 0) {
+                Map<String, JSONObject> seen = new LinkedHashMap<>();
+                for (Element a : lsec.select("a[href*=/ep-]")) {
+                    String href = a.attr("href");
+                    String slug = slugFromHref(href);
+                    int ep = epFromHref(href);
+                    if (slug.isEmpty() || ep < 0) continue;
+                    String key = slug + ":" + ep;
+                    if (seen.containsKey(key)) continue;
+                    Element img = a.selectFirst("img");
+                    Element strong = a.selectFirst("strong");
+                    String meta = a.text().replaceAll("\\s+", " ").trim();
+                    Matcher tm = Pattern.compile("(\\d+\\s+(?:hour|minute|day|second)s?\\s+ago|NEW)", Pattern.CASE_INSENSITIVE).matcher(meta);
+                    JSONObject o = new JSONObject();
+                    o.put("slug", slug);
+                    o.put("title", strong != null && !strong.text().trim().isEmpty()
+                            ? strong.text().trim() : (img != null ? img.attr("alt") : slug));
+                    o.put("poster", abs(img == null ? "" : img.attr("src")));
+                    o.put("episode", ep);
+                    o.put("href", href);
+                    o.put("time", tm.find() ? tm.group(1) : "");
+                    o.put("genres", new JSONArray());
+                    o.put("type", "TV");
+                    o.put("subCount", 0);
+                    o.put("dubCount", 0);
+                    seen.put(key, o);
+                    if (seen.size() >= 15) break;
+                }
+                for (JSONObject o : seen.values()) latest.put(o);
+            }
+        }
+
+        JSONObject out = new JSONObject();
+        out.put("spotlight", spotlight);
+        out.put("featured", featured);
+        out.put("trending", trending);
+        out.put("latest", latest);
+        out.put("fetchedAt", now());
+        return out;
+    }
+
+    private JSONObject scrapeBrowse(String qs) throws Exception {
+        boolean isSearch = qs.contains("keyword=");
+        String url = (isSearch ? BASE + "/browser?" : BASE + "/browse?") + qs;
+        String html;
+        try {
+            html = fetchPage(url);
+        } catch (Exception e) {
+            html = fetchPage(BASE + "/updates?" + qs);
+        }
+        Document doc = Jsoup.parse(html, BASE);
+        JSONArray results = new JSONArray();
+        Map<String, Boolean> seen = new HashMap<>();
+        for (Element el : doc.select(".nv-browse-card, .nv-anime-card")) {
+            JSONObject c = parseCard(el);
+            if (c != null && !seen.containsKey(c.getString("slug"))) {
+                seen.put(c.getString("slug"), true);
+                results.put(c);
+            }
+        }
+        JSONObject out = new JSONObject();
+        out.put("results", results);
+        out.put("totalText", doc.selectFirst(".nv-browse-main-title p, .nv-browse-stats") != null
+                ? doc.selectFirst(".nv-browse-main-title p, .nv-browse-stats").text().replaceAll("\\s+", " ").trim() : "");
+        out.put("resultsCount", results.length());
+        out.put("fetchedAt", now());
+        return out;
+    }
+
+    private JSONObject scrapeAnime(String slug) throws Exception {
+        Document doc = Jsoup.parse(fetchPage(BASE + "/watch/" + slug), BASE);
+        Element main = doc.selectFirst("main");
+        String title = main != null && main.selectFirst("h1") != null
+                ? main.selectFirst("h1").text().trim() : "";
+        if (title.isEmpty()) throw new Exception("anime not found: " + slug);
+        Element posterEl = doc.selectFirst(".nv-info-poster img");
+        String poster = abs(posterEl == null ? "" : posterEl.attr("src"));
+        String backdrop = poster;
+        Element bg = doc.selectFirst(".nv-info-bg");
+        if (bg != null) {
+            Matcher m = Pattern.compile("url\\(['\"]?(.*?)['\"]?\\)").matcher(bg.attr("style"));
+            if (m.find()) backdrop = abs(m.group(1));
+        }
+        List<String> tags = new ArrayList<>();
+        for (Element s : doc.select(".nv-info-tags span")) tags.add(s.text().trim());
+        List<String> genres = new ArrayList<>();
+        for (Element a : doc.select("a[href*=genres]")) {
+            String t = a.text().replaceAll("^,\\s*", "").trim();
+            if (!t.isEmpty() && !genres.contains(t) && genres.size() < 12) genres.add(t);
+        }
+        JSONObject stats = new JSONObject();
+        for (Element d : doc.select(".nv-info-stats div")) {
+            Element k = d.selectFirst("span");
+            Element v = d.selectFirst("strong");
+            if (k != null && v != null) stats.put(k.text().trim().toLowerCase(Locale.US), v.text().trim());
+        }
+        JSONArray episodes = new JSONArray();
+        List<JSONObject> eps = new ArrayList<>();
+        for (Element el : doc.select(".nv-info-episode-item")) {
+            Element a = el.selectFirst("a.nv-info-episode-main, a[href*=/ep-]");
+            if (a == null) continue;
+            int ep = epFromHref(a.attr("href"));
+            if (ep < 0) continue;
+            Element t = a.selectFirst("span");
+            List<String> badges = new ArrayList<>();
+            for (Element b : el.select(".nv-info-episode-badges span")) badges.add(b.text().trim());
+            JSONObject o = new JSONObject();
+            o.put("number", ep);
+            o.put("title", t == null ? "" : t.text().trim());
+            o.put("href", a.attr("href"));
+            o.put("badges", new JSONArray(badges));
+            eps.add(o);
+        }
+        eps.sort((x, y) -> {
+            try { return Integer.compare(x.getInt("number"), y.getInt("number")); }
+            catch (Exception e) { return 0; }
+        });
+        for (JSONObject o : eps) episodes.put(o);
+
+        JSONObject out = new JSONObject();
+        out.put("slug", slug);
+        out.put("title", title);
+        out.put("altTitle", txt(doc, ".nv-info-alt-title"));
+        Element descEl = doc.selectFirst(".nv-info-desc, .nv-info-synopsis p");
+        out.put("desc", descEl == null ? "" : descEl.text().trim());
+        out.put("poster", poster);
+        out.put("backdrop", backdrop);
+        out.put("tags", new JSONArray(tags));
+        out.put("genres", new JSONArray(genres));
+        out.put("stats", stats);
+        out.put("episodes", episodes);
+        out.put("episodeCount", episodes.length());
+        out.put("fetchedAt", now());
+        return out;
+    }
+
+    private JSONObject scrapeWatch(String slug, int ep) throws Exception {
+        Document doc = Jsoup.parse(fetchPage(BASE + "/watch/" + slug + "/ep-" + ep), BASE);
+        Element h1 = doc.selectFirst(".nv-title-main h1, h1");
+        Element meta = doc.selectFirst(".nv-watch-meta");
+
+        JSONObject langLabels = new JSONObject();
+        for (Element b : doc.select(".server-tab[data-id]")) {
+            Element s = b.selectFirst("strong");
+            langLabels.put(b.attr("data-id"), s == null ? b.attr("data-id") : s.text().trim());
+        }
+        JSONObject servers = new JSONObject();
+        servers.put("hsub", new JSONArray());
+        servers.put("sub", new JSONArray());
+        servers.put("dub", new JSONArray());
+        for (Element b : doc.select(".server-video[data-video]")) {
+            String embed = b.attr("data-video");
+            String tab = b.attr("data-tab");
+            Element grp = b.closest(".lang-group");
+            String group = grp == null ? "" : grp.attr("data-id");
+            String name = b.ownText().trim();
+            if (name.isEmpty()) {
+                String all = b.text().trim();
+                name = all.contains(" ") ? all.substring(0, all.indexOf(' ')) : all;
+            }
+            JSONObject e = new JSONObject();
+            e.put("name", name);
+            e.put("embed", embed);
+            e.put("tab", tab);
+            if (group.equals("hsub") || group.equals("sub") || group.equals("dub")) {
+                servers.getJSONArray(group).put(e);
+            }
+        }
+        if (servers.getJSONArray("hsub").length() == 0
+                && servers.getJSONArray("sub").length() == 0
+                && servers.getJSONArray("dub").length() == 0) {
+            int i = 0;
+            for (Element b : doc.select(".server-video")) {
+                String name = b.text().trim();
+                if (name.contains("\n")) name = name.substring(0, name.indexOf('\n')).trim();
+                JSONObject e = new JSONObject();
+                e.put("name", name.isEmpty() ? "Server " + (i + 1) : name);
+                e.put("embed", b.attr("data-video"));
+                e.put("tab", "");
+                servers.getJSONArray("sub").put(e);
+                i++;
+            }
+        }
+
+        JSONArray episodes = new JSONArray();
+        List<JSONObject> eps = new ArrayList<>();
+        boolean hasPrev = false, hasNext = false;
+        for (Element a : doc.select(".nv-episode-item")) {
+            int n = epFromHref(a.attr("href"));
+            if (n < 0) continue;
+            JSONObject o = new JSONObject();
+            o.put("number", n);
+            o.put("href", a.attr("href"));
+            o.put("active", a.hasClass("active"));
+            eps.add(o);
+            if (n == ep - 1) hasPrev = true;
+            if (n == ep + 1) hasNext = true;
+        }
+        eps.sort((x, y) -> {
+            try { return Integer.compare(x.getInt("number"), y.getInt("number")); }
+            catch (Exception e) { return 0; }
+        });
+        for (JSONObject o : eps) episodes.put(o);
+
+        JSONObject out = new JSONObject();
+        out.put("slug", slug);
+        out.put("episode", ep);
+        out.put("animeTitle", h1 == null ? "" : h1.text().trim());
+        out.put("meta", meta == null ? "" : meta.text().replaceAll("\\s+", " ").trim());
+        out.put("servers", servers);
+        out.put("langLabels", langLabels);
+        out.put("episodes", episodes);
+        out.put("hasPrev", hasPrev);
+        out.put("hasNext", hasNext);
+        out.put("fetchedAt", now());
+        return out;
+    }
+
+    private JSONObject scrapeSchedule() throws Exception {
+        Document doc = Jsoup.parse(fetchPage(BASE + "/schedule"), BASE);
+        JSONArray items = new JSONArray();
+        Map<String, Boolean> seen = new HashMap<>();
+        for (Element el : doc.select(".nv-schedule-item")) {
+            Element thumb = el.selectFirst("a.nv-schedule-thumb[href*=/watch/]");
+            String slug = thumb == null ? "" : slugFromHref(thumb.attr("href"));
+            String title = txt(el, "h3");
+            String meta = txt(el, ".nv-schedule-meta");
+            Matcher em = Pattern.compile("episode\\s+(\\d+)", Pattern.CASE_INSENSITIVE).matcher(meta);
+            if (slug.isEmpty() || !em.find()) continue;
+            int episode = Integer.parseInt(em.group(1));
+            String key = slug + episode;
+            if (seen.containsKey(key)) continue;
+            seen.put(key, true);
+            Element group = el.closest(".nv-time-group");
+            String time = group != null ? txt(group, ".nv-time-label strong") : "";
+            if (time.isEmpty()) {
+                String cd = txt(el, ".nv-countdown span");
+                if (cd.length() >= 16) time = cd.substring(11, 16);
+            }
+            boolean released = meta.toLowerCase(Locale.US).matches("(?s).*(released|available).*")
+                    && !meta.toLowerCase(Locale.US).matches("(?s).*(not released|upcoming|coming soon).*");
+            Element img = el.selectFirst("img");
+            JSONObject o = new JSONObject();
+            o.put("slug", slug);
+            o.put("title", title.isEmpty() ? slug : title);
+            o.put("episode", episode);
+            o.put("href", "/watch/" + slug + "/ep-" + episode);
+            o.put("time", time);
+            o.put("status", released ? "released" : "upcoming");
+            o.put("poster", abs(img == null ? "" : img.attr("src")));
+            o.put("text", meta);
+            items.put(o);
+            if (items.length() >= 60) break;
+        }
+        JSONObject out = new JSONObject();
+        out.put("items", items);
+        out.put("fetchedAt", now());
+        return out;
+    }
+}

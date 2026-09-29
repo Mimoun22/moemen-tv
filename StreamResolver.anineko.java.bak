@@ -1,0 +1,312 @@
+package com.moemen.tv;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLDecoder;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Resolves anineko embed pages to direct playable HLS files (mirror of server.js).
+ * Skips relative /stream/ decoys and hotlink-blocked hosts via a segment probe.
+ */
+public class StreamResolver {
+    public static final String UA = "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36 MoemenTV/1.0";
+    private static final String PAGE_REF = "https://anineko.to/";
+
+    public static class Track {
+        public final String label;
+        public final String file;
+        Track(String l, String f) { label = l; file = f; }
+    }
+
+    public static class Stream {
+        public String file;
+        public String type = "hls";
+        public String poster = "";
+        public String referer = PAGE_REF;
+        public double duration = 0;
+        public final List<Track> tracks = new ArrayList<>();
+    }
+
+    public static Stream resolve(String embedUrl) throws Exception {
+        String host = new URL(embedUrl).getHost().toLowerCase(java.util.Locale.US);
+        Stream s = new Stream();
+        parseTracks(embedUrl, s);
+        if (host.contains("vivibebe")) {
+            String html = get(embedUrl, PAGE_REF, null);
+            Matcher m = Pattern.compile("const src\\s*=\\s*\"(https?:[^\"]+)\"").matcher(html);
+            if (!m.find()) throw new Exception("vivibebe: no stream found");
+            Matcher pm = Pattern.compile("const poster\\s*=\\s*\"([^\"]*)\"").matcher(html);
+            if (pm.find()) s.poster = pm.group(1);
+            s.file = m.group(1);
+            s.referer = "https://vivibebe.site/";
+        } else if (host.contains("otakuhg") || host.contains("otakuvid")) {
+            String html = get(embedUrl, PAGE_REF, null);
+            Matcher ev = Pattern.compile("eval\\(function\\(p,a,c,k,e,[rd]\\)\\{[\\s\\S]*?\\}\\(([\\s\\S]*)\\)\\)\\s*(?:</script>|$)").matcher(html);
+            if (!ev.find()) throw new Exception("hg/ev: no packed player found");
+            String[] par = parsePackerArgs(ev.group(1));
+            if (par == null) throw new Exception("hg/ev: packer parse failed");
+            String src = unpack(par[0], Integer.parseInt(par[1]), par[2]);
+            Matcher lm = Pattern.compile("links\\s*=\\s*\\{([^}]+)\\}").matcher(src);
+            Map<String, String> links = new LinkedHashMap<>();
+            if (lm.find()) {
+                Matcher kv = Pattern.compile("\"(hls\\d+)\"\\s*:\\s*\"([^\"]+)\"").matcher(lm.group(1));
+                while (kv.find()) links.put(kv.group(1), kv.group(2).replace("\\/", "/"));
+            }
+            String file = "";
+            String[] order = {"hls4", "hls3", "hls2"};
+            for (String k : order) {
+                String v = links.get(k);
+                if (v != null && v.startsWith("http") && v.contains(".m3u8")) { file = v; break; }
+            }
+            if (file.isEmpty()) {
+                for (String k : order) {
+                    String v = links.get(k);
+                    if (v != null && v.startsWith("http") && v.contains(".txt")) { file = v; break; }
+                }
+            }
+            if (file.isEmpty()) {
+                Matcher any = Pattern.compile("https?:[^\"\\\\\\s]+\\.m3u8[^\"\\\\\\s]*").matcher(src);
+                if (any.find()) file = any.group(0);
+            }
+            if (file.isEmpty()) throw new Exception("hg/ev: no stream link found");
+            s.file = file;
+            s.referer = "https://" + host + "/";
+            Matcher dm = Pattern.compile("duration\\s*:\\s*\"([\\d.]+)\"").matcher(src);
+            if (dm.find()) {
+                try { s.duration = Double.parseDouble(dm.group(1)); } catch (Exception ignored) { }
+            }
+        } else {
+            throw new Exception("host not resolvable");
+        }
+        verifyHls(s.file, s.referer);
+        return s;
+    }
+
+    // ---- Dean Edwards unpacker (base-N) ----
+    private static String baseN(int n, int b) {
+        String chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        if (n == 0) return "0";
+        String s = "";
+        while (n > 0) { s = chars.charAt(n % b) + s; n /= b; }
+        return s;
+    }
+
+    private static String[] parsePackerArgs(String args) {
+        Matcher m = Pattern.compile(",(\\d+),(\\d+),'(.*)'\\.split\\('\\|'\\)", Pattern.DOTALL).matcher(args);
+        if (!m.find()) {
+            m = Pattern.compile(",(\\d+),(\\d+),\"(.*)\"\\.split\\(\"\\|\"\\)", Pattern.DOTALL).matcher(args);
+            if (!m.find()) return null;
+            Matcher pm = Pattern.compile("^\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(args);
+            return pm.find() ? new String[]{pm.group(1), m.group(1), m.group(3)} : null;
+        }
+        Matcher pm = Pattern.compile("^'((?:[^'\\\\]|\\\\.)*)'").matcher(args);
+        return pm.find() ? new String[]{pm.group(1), m.group(1), m.group(3)} : null;
+    }
+
+    private static String unpack(String p, int a, String k) {
+        String[] words = k.split("\\|", -1);
+        Map<String, String> table = new LinkedHashMap<>();
+        for (int i = 0; i < words.length; i++) {
+            if (!words[i].isEmpty()) table.put(baseN(i, a), words[i]);
+        }
+        Matcher m = Pattern.compile("\\b[A-Za-z0-9_$]+\\b").matcher(p);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String w = m.group(0);
+            m.appendReplacement(sb, Matcher.quoteReplacement(table.containsKey(w) ? table.get(w) : w));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static void parseTracks(String embedUrl, Stream s) {
+        try {
+            URL u = new URL(embedUrl);
+            String q = u.getQuery();
+            if (q == null) return;
+            Map<String, String> params = new LinkedHashMap<>();
+            for (String kv : q.split("&")) {
+                int eq = kv.indexOf('=');
+                if (eq > 0) params.put(URLDecoder.decode(kv.substring(0, eq), "UTF-8"),
+                        URLDecoder.decode(kv.substring(eq + 1), "UTF-8"));
+            }
+            String sub = params.get("sub");
+            String cap = params.get("caption_1");
+            String c1 = params.get("c1_file");
+            if (sub != null && sub.startsWith("http")) s.tracks.add(new Track(params.get("sub_1") != null ? params.get("sub_1") : "English", sub));
+            if (cap != null && cap.startsWith("http")) s.tracks.add(new Track(params.get("sub_1") != null ? params.get("sub_1") : "English", cap));
+            if (c1 != null && c1.startsWith("http")) s.tracks.add(new Track(params.get("c1_label") != null ? params.get("c1_label") : "English", c1));
+        } catch (Exception ignored) { }
+    }
+
+    private static String get(String url, String ref, String range) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setRequestProperty("User-Agent", UA);
+        c.setRequestProperty("Referer", ref != null ? ref : PAGE_REF);
+        c.setRequestProperty("Accept", "*/*");
+        if (range != null) c.setRequestProperty("Range", range);
+        c.setConnectTimeout(20000);
+        c.setReadTimeout(20000);
+        c.setInstanceFollowRedirects(true);
+        int code = c.getResponseCode();
+        if (code < 200 || code >= 300) throw new Exception("upstream " + code);
+        String enc = c.getContentEncoding();
+        InputStream in = c.getInputStream();
+        if (enc != null && enc.contains("gzip")) in = new java.util.zip.GZIPInputStream(in);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        // cap reads (range probes may return full body on sloppy hosts)
+        int cap = range != null ? 65536 : 4 * 1024 * 1024;
+        int total = 0;
+        while ((n = in.read(buf)) > 0) {
+            out.write(buf, 0, n);
+            total += n;
+            if (total > cap) break;
+        }
+        in.close();
+        String ct = c.getContentType();
+        return (ct == null ? "" : ct) + "\n" + out.toString("UTF-8");
+    }
+
+    private static void verifyHls(String masterUrl, String ref) throws Exception {
+        String r0 = get(masterUrl, ref, null);
+        String t0 = r0.substring(r0.indexOf('\n') + 1);
+        if (!t0.contains("#EXT-X-STREAM-INF")) return;
+        String[] lines = t0.split("\n");
+        int idx = -1;
+        for (int i = 0; i < lines.length; i++) {
+            if (lines[i].trim().startsWith("#EXT-X-STREAM-INF")) { idx = i; break; }
+        }
+        if (idx < 0 || idx + 1 >= lines.length) throw new Exception("no variant found");
+        String rel = lines[idx + 1].trim();
+        if (rel.isEmpty() || rel.startsWith("#")) throw new Exception("no variant found");
+        String variantUrl = new URL(new URL(masterUrl), rel).toString();
+        String r1 = get(variantUrl, ref, null);
+        String t1 = r1.substring(r1.indexOf('\n') + 1);
+        if (!t1.contains("#EXTINF")) throw new Exception("bad variant playlist");
+        String seg = null;
+        for (String l : t1.split("\n")) {
+            l = l.trim();
+            if (!l.isEmpty() && !l.startsWith("#") && !l.startsWith("EXT-")) { seg = l; break; }
+        }
+        if (seg == null) throw new Exception("no segments found");
+        String segUrl = new URL(new URL(variantUrl), seg).toString();
+        String r2 = get(segUrl, ref, "bytes=0-0");
+        String ct = r2.substring(0, r2.indexOf('\n')).toLowerCase(java.util.Locale.US);
+        if (ct.contains("json") || ct.contains("image") || ct.contains("html")) {
+            throw new Exception("segment blocked (decoy content)");
+        }
+    }
+
+    /** First English VTT URL across server embeds (lets DUB borrow SUB timings). No network. */
+    public static String englishVttUrl(org.json.JSONObject servers) {
+        if (servers == null) return null;
+        String[] langs = {"sub", "dub", "hsub"};
+        String[] keys = {"sub", "caption_1", "c1_file"};
+        for (String l : langs) {
+            org.json.JSONArray arr = servers.optJSONArray(l);
+            if (arr == null) continue;
+            for (int i = 0; i < arr.length(); i++) {
+                String embed = arr.optJSONObject(i) != null ? arr.optJSONObject(i).optString("embed", "") : "";
+                int qi = embed.indexOf('?');
+                if (qi < 0) continue;
+                for (String kv : embed.substring(qi + 1).split("&")) {
+                    int eq = kv.indexOf('=');
+                    if (eq < 0) continue;
+                    try {
+                        String k = java.net.URLDecoder.decode(kv.substring(0, eq), "UTF-8");
+                        String v = java.net.URLDecoder.decode(kv.substring(eq + 1), "UTF-8");
+                        for (String want : keys) {
+                            if (k.equals(want) && v.startsWith("http")) return v;
+                        }
+                    } catch (Exception ignored) { }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Quality variants of a master playlist (best effort). */
+    public static class Variant {
+        public int height;
+        public long bandwidth;
+        public String url;
+        public String label;
+    }
+
+    public static java.util.List<Variant> variants(String masterUrl, String ref) {
+        java.util.List<Variant> out = new java.util.ArrayList<>();
+        try {
+            String raw = get(masterUrl, ref, null);
+            String text = raw.substring(raw.indexOf('\n') + 1);
+            if (!text.contains("#EXT-X-STREAM-INF")) return out;
+            String[] lines = text.split("\n");
+            for (int i = 0; i < lines.length; i++) {
+                String l = lines[i].trim();
+                if (!l.startsWith("#EXT-X-STREAM-INF")) continue;
+                long bw = 0;
+                int h = 0;
+                Matcher bm = Pattern.compile("BANDWIDTH=(\\d+)").matcher(l);
+                if (bm.find()) {
+                    try { bw = Long.parseLong(bm.group(1)); } catch (Exception ignored) { }
+                }
+                Matcher rm = Pattern.compile("RESOLUTION=\\d+x(\\d+)").matcher(l);
+                if (rm.find()) {
+                    try { h = Integer.parseInt(rm.group(1)); } catch (Exception ignored) { }
+                }
+                if (i + 1 >= lines.length) continue;
+                String rel = lines[i + 1].trim();
+                if (rel.isEmpty() || rel.startsWith("#")) continue;
+                Variant v = new Variant();
+                v.height = h;
+                v.bandwidth = bw;
+                v.url = new URL(new URL(masterUrl), rel).toString();
+                v.label = h > 0 ? (h + "p") : (bw > 0 ? ((bw / 1000) + "k") : "Auto");
+                out.add(v);
+            }
+        } catch (Exception ignored) { }
+        return out;
+    }
+
+    public static Variant pickVariant(java.util.List<Variant> vars, int quality) {
+        if (vars == null || vars.isEmpty()) return null;
+        java.util.List<Variant> sorted = new java.util.ArrayList<>(vars);
+        java.util.Collections.sort(sorted, (a, b) ->
+                Long.compare(b.height > 0 ? b.height : b.bandwidth, a.height > 0 ? a.height : a.bandwidth));
+        if (quality <= 0) return sorted.get(0);
+        Variant fallback = sorted.get(sorted.size() - 1);
+        for (int i = sorted.size() - 1; i >= 0; i--) {
+            Variant v = sorted.get(i);
+            if (v.height > 0 && v.height <= quality) return v;
+            fallback = v;
+        }
+        return fallback;
+    }
+
+    public static JSONObject toJson(Stream s) throws Exception {        JSONObject o = new JSONObject();
+        o.put("file", s.file);
+        o.put("type", s.type);
+        o.put("poster", s.poster);
+        o.put("referer", s.referer);
+        o.put("duration", s.duration);
+        JSONArray tr = new JSONArray();
+        for (Track t : s.tracks) {
+            tr.put(new JSONObject().put("label", t.label).put("file", t.file));
+        }
+        o.put("tracks", tr);
+        o.put("playable", true);
+        return o;
+    }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "anineko-tv",
+  "version": "1.0.0",
+  "description": "AniNeko Android TV / TV-browser replica — watch-only, Netflix-style, live-synced to aniwaves.ru via scraper proxy.",
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": { "node": "20.x" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/oswald": "^5.3.0",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "hls.js": "^1.7.2"
+  }
+}

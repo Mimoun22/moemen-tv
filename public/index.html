@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AniNeko TV — Watch Anime</title>
+<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/player.css">
+<link rel="stylesheet" href="css/mobile.css">
+<link rel="icon" href="icon.png">
+</head>
+<body>
+<div id="boot">
+  <img src="icon.png" alt="Moemen TV">
+  <div class="boot-name">MOEMEN <span>TV</span></div>
+  <div class="spin"></div>
+  <div class="boot-sub">Loading live anime…</div>
+  <button id="bootRetry" data-focusable class="hidden">↻ Retry</button>
+</div>
+<div id="app">
+  <header id="topbar">
+    <div class="logo" data-focusable data-action="home"><img src="icon.png" class="logo-img" alt="">MOEMEN <span>TV</span></div>
+    <nav id="nav">
+      <button data-focusable data-nav="home" class="active">Home</button>
+      <button data-focusable data-nav="browse">Browse</button>
+      <button data-focusable data-nav="latest">Latest</button>
+      <button data-focusable data-nav="mylist">My List</button>
+      <button data-focusable data-nav="schedule">Schedule</button>
+    </nav>
+    <div class="top-right">
+      <div id="liveBadge" class="live"><span class="dot"></span>LIVE</div>
+      <div id="updatedAt" class="updated">—</div>
+      <button id="searchBtn" data-focusable data-action="search" aria-label="Search">⌕</button>
+      <button id="refreshBtn" data-focusable data-action="refresh" aria-label="Refresh">⟳</button>
+      <button id="setBtn" data-focusable data-action="settings" aria-label="Display settings">⚙</button>
+    </div>
+  </header>
+
+  <div id="searchBar" class="hidden">
+    <input id="searchInput" data-focusable type="text" placeholder="Search anime... (type + Enter)" autocomplete="off">
+    <button data-focusable id="searchGo">Search</button>
+    <button data-focusable id="searchClose">✕</button>
+  </div>
+
+  <div id="setMenu" class="hidden">
+    <div class="set-title">DISPLAY SIZE</div>
+    <div id="zoomRow"></div>
+  </div>
+
+  <!-- HOME -->
+  <main id="view-home" class="view">
+    <section id="hero" data-focusable data-action="hero-play">
+      <img id="heroBg" alt="">
+      <div class="hero-grad"></div>
+      <div class="hero-body">
+        <div class="kicker">★ FEATURED SERIES</div>
+        <h1 id="heroTitle">Loading...</h1>
+        <div id="heroMeta" class="metaline"></div>
+        <p id="heroDesc"></p>
+        <div id="heroAudio" class="avline"></div>
+        <div class="hero-btns">
+          <button id="heroPlay" data-focusable data-action="hero-play">▶ Watch E1</button>
+          <button id="heroInfo" data-focusable data-action="hero-info" class="ghost">ⓘ Details</button>
+          <button id="heroList" data-focusable data-action="hero-list" class="iconbtn" aria-label="My List">+</button>
+          <div class="hero-dots" id="heroDots"></div>
+        </div>
+      </div>
+    </section>
+    <div id="rows"></div>
+  </main>
+
+  <!-- GRID (browse/latest/schedule/search) -->
+  <main id="view-grid" class="view hidden">
+    <div class="grid-head">
+      <h2 id="gridTitle">Browse</h2>
+      <p id="gridSub"></p>
+      <div id="genreChips" class="chips"></div>
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <!-- DETAILS (Crunchyroll-style series header) -->
+  <main id="view-details" class="view hidden">
+    <div id="detailsHero">
+      <img id="dBackdrop" alt="">
+      <div class="hero-grad"></div>
+      <button data-focusable id="dBack" class="backbtn">← Back (Esc)</button>
+      <div class="d-body">
+        <div class="d-info">
+          <div class="kicker" id="dKicker">★ SERIES</div>
+          <h1 id="dTitle"></h1>
+          <div id="dAlt" class="alt"></div>
+          <div id="dMetaLine" class="metaline"></div>
+          <div class="d-btns">
+            <button data-focusable id="dPlay">▶ Watch E1</button>
+            <button data-focusable id="dWatchlist" class="iconbtn" aria-label="My List">+</button>
+            <button data-focusable id="dShare" class="iconbtn" aria-label="Share">⤴</button>
+          </div>
+          <div id="dAv" class="avline"></div>
+        </div>
+        <img id="dPoster" class="d-poster-card" alt="">
+      </div>
+      <div class="d-facts">
+        <p id="dDesc"></p>
+        <div id="dFacts" class="facts-grid"></div>
+        <div id="dMeta" class="pills"></div>
+      </div>
+    </div>
+    <div class="ep-head">
+      <h2>Episodes <span id="epCount"></span></h2>
+      <div class="ep-pager">
+        <button data-focusable id="epPrev">← Prev</button>
+        <button data-focusable id="epNext">Next →</button>
+      </div>
+    </div>
+    <div id="epGrid" class="ep-list"></div>
+  </main>
+
+  <!-- PLAYER: own Netflix-style player (site iframe only as fallback) -->
+  <div id="player" class="hidden">
+    <video id="v" playsinline preload="auto"></video>
+    <div id="vSpin" class="hidden"><div class="spin big"></div></div>
+    <div id="vFlashL" class="vflash">−10s</div>
+    <div id="vFlashR" class="vflash">+10s</div>
+    <div id="vBig" class="hidden">▶</div>
+    <div id="vTop">
+      <button data-focusable id="pBack">← Back</button>
+      <div id="pTitle">—</div>
+      <div class="p-nav">
+        <button data-focusable id="pPrev">← Prev</button>
+        <button data-focusable id="pNext">Next →</button>
+      </div>
+    </div>
+    <div id="vEnd" class="hidden"></div>
+    <div id="vMenu" class="hidden"><div id="vMenuTitle"></div><div id="vMenuList"></div></div>
+    <div id="vBottom">
+      <div id="vProgWrap">
+        <div id="vProg" data-focusable tabindex="0"><div id="vBuf"></div><div id="vPlayed"></div><div id="vKnob"></div><div id="vTip">0:00</div></div>
+        <div id="vTime"><span id="vCur">0:00</span> / <span id="vDur">0:00</span></div>
+      </div>
+      <div id="vBtns">
+        <button data-focusable id="bPlay">❚❚</button>
+        <button data-focusable id="bBack10">−10</button>
+        <button data-focusable id="bFwd10">+10</button>
+        <button data-focusable id="bPrevEp">|◀</button>
+        <button data-focusable id="bNextEp">▶|</button>
+        <span class="vsep"></span>
+        <button data-focusable id="bLang" class="txtbtn">SUB</button>
+        <button data-focusable id="bServer" class="txtbtn">▦ Server</button>
+        <button data-focusable id="bSubs" class="txtbtn">CC</button>
+        <button data-focusable id="bSpeed" class="txtbtn">1x</button>
+        <button data-focusable id="bQual" class="txtbtn">Auto</button>
+        <button data-focusable id="bLock" class="txtbtn">🔒</button>
+        <button data-focusable id="bSite" class="txtbtn">Site ▸</button>
+        <button data-focusable id="bFull" class="txtbtn">⛶</button>
+      </div>
+      <div class="hint">OK play/pause • ←/→ seek • S servers • L audio • Esc back</div>
+    </div>
+    <div id="vLockFab" class="hidden">🔒</div>
+    <div id="vFrameWrap" class="hidden">
+      <div class="vfw-head"><span>Site player (fallback)</span><button data-focusable id="bFrameClose">✕ Use own player</button></div>
+      <iframe id="frame" tabindex="-1" allowfullscreen allow="autoplay; fullscreen; encrypted-media" frameborder="0" scrolling="no"></iframe>
+      <div id="serverRow" class="server-row"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+  <div id="loading" class="hidden"><div class="spin"></div>Loading live data from aniwave…</div>
+
+  <!-- DOWNLOAD chooser (hidden on TV) -->
+  <div id="dlModal" class="hidden">
+    <div class="dl-card">
+      <div class="dl-title" id="dlTitle">Download</div>
+      <div class="dl-sec">AUDIO</div>
+      <div id="dlLangs"></div>
+      <div class="dl-sec">QUALITY</div>
+      <div id="dlQuals"></div>
+      <div id="dlSub" class="dl-sub"></div>
+      <div id="dlProg" class="hidden"><i></i></div>
+      <div id="dlStat"></div>
+      <div class="dl-btns">
+        <button data-focusable id="dlStart">⤓ Download</button>
+        <button data-focusable id="dlCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="vendor/hls.min.js"></script>
+<script src="js/app.js"></script>
+<script src="js/player.js"></script>
+</body>
+</html>

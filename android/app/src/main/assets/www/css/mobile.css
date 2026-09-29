@@ -1,0 +1,70 @@
+/* Mobile portrait + touch rules (loaded on all clients; base = download UI) */
+.dlbtn{background:rgba(255,255,255,.08);border:1px solid var(--line);color:var(--acc);
+  border-radius:10px;min-width:48px;min-height:48px;font-size:22px;cursor:pointer;flex:none}
+body.tv .dlbtn{display:none!important}
+/* download chooser modal */
+#dlModal{position:fixed;inset:0;z-index:400;display:flex;align-items:flex-end;justify-content:center;
+  background:rgba(0,0,0,.65)}
+.dl-card{width:100%;max-width:560px;max-height:86vh;overflow:auto;background:#141a2e;
+  border:1px solid var(--line);border-radius:20px 20px 0 0;padding:20px 20px 28px}
+.dl-title{font-family:Oswald,Inter,sans-serif;font-size:22px;letter-spacing:1px;margin-bottom:6px}
+.dl-sec{font-size:12px;letter-spacing:2px;color:var(--mut);font-weight:800;margin:14px 0 8px}
+#dlLangs{display:flex;gap:8px;flex-wrap:wrap}
+#dlLangs button{background:var(--card);border:2px solid var(--line);color:#fff;border-radius:999px;
+  padding:10px 22px;font-size:16px;font-weight:700;cursor:pointer}
+#dlLangs button.on{background:var(--acc);border-color:var(--acc);color:#14100b}
+#dlQuals{display:flex;flex-direction:column;gap:8px}
+#dlQuals button{display:flex;justify-content:space-between;align-items:center;background:var(--card);
+  border:2px solid var(--line);color:#fff;border-radius:12px;padding:14px 16px;font-size:17px;cursor:pointer}
+#dlQuals button.on{border-color:var(--acc)}
+#dlQuals button small{color:var(--mut)}
+#dlQuals .spin{width:20px;height:20px}
+.dl-sub{color:var(--mut);font-size:14px;margin-top:12px}
+.dl-sub a{color:var(--acc)}
+.dl-btns{display:flex;gap:10px;margin-top:18px}
+.dl-btns button{flex:1;font-size:19px;font-weight:800;padding:15px;border-radius:12px;cursor:pointer;border:none}
+#dlStart{background:var(--acc);color:#14100b}
+#dlCancel{background:var(--card);color:#fff;border:1px solid var(--line)!important}
+#dlProg{height:8px;border-radius:4px;background:rgba(255,255,255,.12);margin-top:14px;overflow:hidden}
+#dlProg i{display:block;height:100%;width:0;background:var(--acc)}
+#dlStat{color:var(--mut);font-size:14px;margin-top:8px}
+
+@media (max-width:820px){
+  html,body{font-size:15px}
+  #topbar{padding:10px 14px;gap:10px;flex-wrap:wrap}
+  .logo{font-size:19px;letter-spacing:1px}
+  .logo-img{width:32px;height:32px}
+  #nav{order:5;width:100%;overflow-x:auto;padding-bottom:2px}
+  #nav button{font-size:16px;padding:8px 12px;white-space:nowrap}
+  .top-right{margin-left:auto}
+  .updated{display:none}
+  #hero{height:54vh;min-height:380px}
+  .hero-body{left:18px;right:18px;bottom:24px}
+  .hero-body h1{font-size:34px}
+  #heroDesc{font-size:15px}
+  .row h2{margin:0 0 2px 16px;font-size:20px}
+  .row .sub{margin:0 0 8px 33px;font-size:13px}
+  .rail,.lrail{padding:12px 16px;gap:12px}
+  .card,.cardwrap{flex-basis:138px}
+  .card img{height:192px}
+  .card .t{font-size:13px;min-height:54px}
+  .cardwrap.ranked{margin-left:22px}
+  .rankbig{font-size:64px;left:-26px}
+  .lrow{flex-basis:290px}
+  .lrow img{width:64px;height:84px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding:12px 16px}
+  .grid-head{padding:18px 16px 4px}
+  .grid-head h2{font-size:26px}
+  .d-body{flex-direction:column;align-items:flex-start;gap:18px;padding:78px 18px 8px}
+  .d-info h1{font-size:34px}
+  .d-poster-card{width:160px;height:230px}
+  .d-facts,.ep-head,.ep-list{padding-left:18px;padding-right:18px}
+  .ep-head{flex-direction:column;align-items:flex-start;gap:10px}
+  .epthumb{width:80px;height:46px}
+  .epnum{font-size:20px;min-width:36px}
+  .epbody b{font-size:16px}
+  .epbadges{display:none}
+  #vBtns button{min-height:48px;min-width:48px}
+  #vBottom{padding:6px 14px 14px}
+  #boot img{width:150px;height:150px}
+}
